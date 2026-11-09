@@ -183,25 +183,28 @@ function iniciarRoboProcessamentoSMS() {
                     }
 
                     // -------------------------------------------------------------
-                    // CASO B: COMPROVATIVO ENVIADO PELO CLIENTE
+                    // CASO B: COMPROVATIVO ENVIADO PELO CLIENTE (Flexível para qualquer variação de texto e número colado na ponta)
                     // -------------------------------------------------------------
                     let sender = item.sender;
-                    let matchRef = texto.match(/(Confirmado|ID da transacao|Transacao|Ref)[:\s]+([A-Z0-9.]+)/i);
+                    
+                    // Extração flexível da Referência / ID da Transação (procura por PP... ou códigos alfanuméricos após palavras-chave)
+                    let matchRef = texto.match(/(ID da transacao|transacao|Ref)[:\s]+([A-Z0-9.]+)/i);
                     if (!matchRef) {
-                        matchRef = texto.match(/Confirmado\s+([A-Z0-9]+)/i);
+                        matchRef = texto.match(/(PP[A-Z0-9.]+)/i);
                     }
-                    let referencia = matchRef ? matchRef[2] || matchRef[1] : "NAO_ENCONTRADA";
+                    let referencia = matchRef ? (matchRef[2] || matchRef[1]) : "NAO_ENCONTRADA";
                     referencia = referencia.replace(/\.$/, "").trim();
 
+                    // Extração do Valor em MT
                     let valorConfirmado = 0;
                     const matchValor = texto.match(/(\d+([.,]\d+)?)\s*MT/i);
                     if (matchValor) {
                         valorConfirmado = parseFloat(matchValor[1].replace(',', '.'));
                     }
 
-                    if (referencia === "NAO_ENCONTRADA") {
+                    if (referencia === "NAO_ENCONTRADA" || valorConfirmado <= 0) {
                         await supabase.from('sms_entrada').update({ status: 'rejeitado', referencia, valor: String(valorConfirmado), receber: 'NAO_ENCONTRADA' }).eq('id', item.id);
-                        await supabase.from('sms_saida').insert([{ telefone: String(sender), mensagem: `❌ Formato de comprovativo não reconhecido ou inválido.`, status: 'pendente' }]);
+                        await supabase.from('sms_saida').insert([{ telefone: String(sender), mensagem: `❌ Formato de comprovativo inválido. Certifique-se de incluir a referência e o valor.`, status: 'pendente' }]);
                         continue;
                     }
 
@@ -212,18 +215,17 @@ function iniciarRoboProcessamentoSMS() {
                         continue;
                     }
 
+                    // Extração ultrarrobusta do número Vodacom (84 ou 85) na ponta ou em qualquer lugar do texto
                     let numeroVodacom = null;
-                    const linhas = texto.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-                    if (linhas.length > 1) {
-                        let ultimaLinha = linhas[linhas.length - 1].replace(/\D/g, '');
-                        if ((ultimaLinha.startsWith('84') || ultimaLinha.startsWith('85')) && ultimaLinha.length === 9) {
-                            numeroVodacom = ultimaLinha;
-                        }
+                    const todosVodacom = texto.match(/\b(8[45]\d{7})\b/g);
+                    if (todosVodacom && todosVodacom.length > 0) {
+                        // Se houver vários números, o número do destinatário na ponta final será sempre o último encontrado no texto
+                        numeroVodacom = todosVodacom[todosVodacom.length - 1];
                     }
 
                     if (!numeroVodacom) {
                         await supabase.from('sms_entrada').update({ status: 'rejeitado_sem_numero', referencia, valor: String(valorConfirmado), receber: 'NUMERO_FALTA' }).eq('id', item.id);
-                        const msgExemplo = `❌ O comprovativo deve ser enviado com o número em baixo.\n\nExemplo de envio correto:\n\nID da transacao PP261101.2357.c37984. Transferiste 15.00MT para conta 871828554, nome: Sergio Juliao Antonio as 23:57:26 de 01/11/2026. Taxa: 0.00MT. O saldo da tua conta e 548.00MT. Conteudo: 1. Em caso de duvida, liga 100. Obrigado!\n84*******`;
+                        const msgExemplo = `❌ O comprovativo deve incluir o número Vodacom (84/85) na ponta final.\n\nExemplo: ...Obrigado!858674827`;
                         await supabase.from('sms_saida').insert([{ telefone: String(sender), mensagem: msgExemplo, status: 'pendente' }]);
                         continue;
                     }
@@ -255,7 +257,7 @@ function iniciarRoboProcessamentoSMS() {
                     const msgResposta = `✅ Pedido Recebido!\n\n💰 Referência: ${referencia}\n📊 Megas: ${pacoteMegas}\n📱 Número: ${numeroVodacom}\n\n_⏳Processando... Aguarde enquanto o Sistema executa a transferência_`;
                     await supabase.from('sms_saida').insert([{ telefone: String(sender), mensagem: msgResposta, status: 'pendente' }]);
 
-                    console.log(`✅ [ROBÔ] Comprovativo processado e enfileirado com sucesso!`);
+                    console.log(`✅ [ROBÔ] Comprovativo processado com sucesso! Ref: ${referencia} | Destino: ${numeroVodacom}`);
                 }
             }
 
@@ -361,7 +363,7 @@ app.get('/sms-saida', async (req, res) => {
     }
 });
 
-// Configuração obrigatória de porta dinâmica e host para o Railway (0.0.0.0 + process.env.PORT)
+// Configuração de porta dinâmica e universal compatível com Railway e Termux
 const PORTA = process.env.PORT || 3000;
 app.listen(PORTA, '0.0.0.0', () => {
     console.log(`\n==================================================`);
